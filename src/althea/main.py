@@ -5,6 +5,7 @@ import signal
 import sys
 import threading
 
+import numpy as np
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -27,18 +28,31 @@ def _handle_sigint(sig: int, frame: object) -> None:  # noqa: ARG001
     _shutdown_event.set()
 
 
-def _on_wake_word() -> None:
-    """Called by WakeWordDetector when the wake word is detected."""
-    logger.info("Wake word detected!")
-    # Subsequent issues will wire VAD + transcription + Agent here.
-
-
 def run() -> None:
     """Start the Althea main loop."""
+    from althea.transcription import Transcriber
+    from althea.vad import VoiceActivityDetector
     from althea.wake_word import WakeWordDetector
 
     signal.signal(signal.SIGINT, _handle_sigint)
     logger.info("Althea is running")
+
+    transcriber = Transcriber()
+
+    def _on_utterance(audio: np.ndarray) -> None:
+        """Called by VoiceActivityDetector with the captured Utterance audio."""
+        text = transcriber.transcribe(audio)
+        if text:
+            print(f"[Althea heard] {text}")
+        else:
+            logger.warning("Transcription returned empty text.")
+
+    vad = VoiceActivityDetector(on_utterance=_on_utterance)
+
+    def _on_wake_word() -> None:
+        """Called by WakeWordDetector when the wake word is detected."""
+        logger.info("Wake word detected — starting VAD capture.")
+        vad.start_capture()
 
     detector = WakeWordDetector(on_wake_word=_on_wake_word)
     detector.start()
@@ -46,6 +60,7 @@ def run() -> None:
     try:
         _shutdown_event.wait()
     finally:
+        vad.stop()
         detector.stop()
         sys.exit(0)
 
@@ -53,5 +68,3 @@ def run() -> None:
 def main() -> None:
     """Console-script entry point (installed via pyproject.toml)."""
     run()
-
-
