@@ -19,6 +19,10 @@ def test_main_run_executes_full_voice_to_agent_pipeline(caplog) -> None:
     agent.run = AsyncMock(return_value="done")
     transcriber = MagicMock()
     transcriber.transcribe.return_value = "open browser"
+    voice_responder = MagicMock()
+    voice_responder.speak.side_effect = (
+        lambda _text, on_complete=None: on_complete() if on_complete else None
+    )
 
     vad = MagicMock()
     detector = MagicMock()
@@ -34,6 +38,7 @@ def test_main_run_executes_full_voice_to_agent_pipeline(caplog) -> None:
     with (
         patch("althea.agent.AltheaAgent", return_value=agent),
         patch("althea.transcription.Transcriber", return_value=transcriber),
+        patch("althea.tts.VoiceResponder", return_value=voice_responder),
         patch("althea.vad.VoiceActivityDetector", side_effect=_build_vad),
         patch("althea.wake_word.WakeWordDetector", side_effect=_build_detector),
         patch("signal.signal"),
@@ -44,6 +49,7 @@ def test_main_run_executes_full_voice_to_agent_pipeline(caplog) -> None:
 
     transcriber.transcribe.assert_called_once()
     agent.run.assert_awaited_once_with("open browser")
+    voice_responder.speak.assert_called_once()
     vad.start_capture.assert_called_once()
     vad.stop.assert_called_once()
     detector.start.assert_called_once()
@@ -69,6 +75,7 @@ def test_main_run_handles_agent_error_and_returns_idle(caplog) -> None:
     agent.run = AsyncMock(side_effect=RuntimeError("boom"))
     transcriber = MagicMock()
     transcriber.transcribe.return_value = "do thing"
+    voice_responder = MagicMock()
 
     vad = MagicMock()
     detector = MagicMock()
@@ -84,6 +91,7 @@ def test_main_run_handles_agent_error_and_returns_idle(caplog) -> None:
     with (
         patch("althea.agent.AltheaAgent", return_value=agent),
         patch("althea.transcription.Transcriber", return_value=transcriber),
+        patch("althea.tts.VoiceResponder", return_value=voice_responder),
         patch("althea.vad.VoiceActivityDetector", side_effect=_build_vad),
         patch("althea.wake_word.WakeWordDetector", side_effect=_build_detector),
         patch("signal.signal"),
@@ -107,6 +115,7 @@ def test_main_run_handles_transcription_error_and_returns_idle(caplog) -> None:
     agent.run = AsyncMock(return_value="unused")
     transcriber = MagicMock()
     transcriber.transcribe.side_effect = RuntimeError("bad audio")
+    voice_responder = MagicMock()
 
     vad = MagicMock()
     detector = MagicMock()
@@ -122,6 +131,7 @@ def test_main_run_handles_transcription_error_and_returns_idle(caplog) -> None:
     with (
         patch("althea.agent.AltheaAgent", return_value=agent),
         patch("althea.transcription.Transcriber", return_value=transcriber),
+        patch("althea.tts.VoiceResponder", return_value=voice_responder),
         patch("althea.vad.VoiceActivityDetector", side_effect=_build_vad),
         patch("althea.wake_word.WakeWordDetector", side_effect=_build_detector),
         patch("signal.signal"),
@@ -144,6 +154,7 @@ def test_main_run_handles_vad_start_error_and_returns_idle(caplog) -> None:
     agent = MagicMock()
     agent.run = AsyncMock(return_value="unused")
     transcriber = MagicMock()
+    voice_responder = MagicMock()
 
     vad = MagicMock()
     vad.start_capture.side_effect = RuntimeError("no microphone")
@@ -159,6 +170,7 @@ def test_main_run_handles_vad_start_error_and_returns_idle(caplog) -> None:
     with (
         patch("althea.agent.AltheaAgent", return_value=agent),
         patch("althea.transcription.Transcriber", return_value=transcriber),
+        patch("althea.tts.VoiceResponder", return_value=voice_responder),
         patch("althea.vad.VoiceActivityDetector", side_effect=_build_vad),
         patch("althea.wake_word.WakeWordDetector", side_effect=_build_detector),
         patch("signal.signal"),

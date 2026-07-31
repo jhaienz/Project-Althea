@@ -18,6 +18,9 @@ cp .env.example .env
 ## Running
 
 ```bash
+# Optional: override Piper voice model path (default: en_US-amy-medium.onnx)
+export ALTHEA_PIPER_MODEL_PATH=/path/to/en_US-amy-medium.onnx
+
 uv run python althea.py
 ```
 

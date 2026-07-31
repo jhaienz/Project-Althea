@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 import threading
@@ -32,6 +33,7 @@ def _handle_sigint(sig: int, frame: object) -> None:  # noqa: ARG001
 def run() -> None:
     """Start the Althea main loop."""
     from althea.agent import AltheaAgent
+    from althea.tts import VoiceResponder
     from althea.transcription import Transcriber
     from althea.vad import VoiceActivityDetector
     from althea.wake_word import WakeWordDetector
@@ -41,6 +43,12 @@ def run() -> None:
 
     agent = AltheaAgent()
     transcriber = Transcriber()
+    configured_tts_model = os.getenv("ALTHEA_PIPER_MODEL_PATH")
+    voice_responder = (
+        VoiceResponder(model_path=configured_tts_model)
+        if configured_tts_model
+        else VoiceResponder()
+    )
     state = "idle"
     state_lock = threading.Lock()
 
@@ -74,6 +82,8 @@ def run() -> None:
         _transition("responding")
         if response:
             logger.info("Althea: %s", response)
+            voice_responder.speak(response, on_complete=lambda: _transition("idle"))
+            return
         _transition("idle")
 
     vad = VoiceActivityDetector(on_utterance=_on_utterance)
