@@ -12,16 +12,33 @@ from althea.tts import VoiceResponder
 
 def test_speak_starts_background_thread() -> None:
     """speak() starts playback on a daemon thread."""
-    responder = VoiceResponder(model_path="voice.onnx")
-
     fake_thread = MagicMock()
-    with patch("althea.tts.threading.Thread", return_value=fake_thread) as thread_cls:
+    with (
+        patch("althea.tts.shutil.which", return_value="/usr/bin/fake"),
+        patch("althea.tts.threading.Thread", return_value=fake_thread) as thread_cls,
+    ):
+        responder = VoiceResponder(model_path="voice.onnx")
         responder.speak("hello")
 
     thread_cls.assert_called_once()
     _, kwargs = thread_cls.call_args
     assert kwargs["daemon"] is True
     fake_thread.start.assert_called_once()
+
+
+def test_speak_completes_when_piper_is_missing() -> None:
+    """Missing Piper binary disables TTS and still triggers completion callback."""
+    done = []
+    with (
+        patch(
+            "althea.tts.shutil.which",
+            side_effect=lambda cmd: None if cmd == "piper" else "/usr/bin/fake",
+        ),
+    ):
+        responder = VoiceResponder(piper_binary="piper", player_binary="aplay")
+        responder.speak("hello", on_complete=lambda: done.append(True))
+
+    assert done == [True]
 
 
 def test_synthesize_and_play_generates_audio_from_text(tmp_path: Path) -> None:

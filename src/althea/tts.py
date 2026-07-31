@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -11,7 +12,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL_PATH = "./models/en_US-amy-medium.onnx"  # relative to the project root
+_DEFAULT_MODEL_PATH = Path(__file__).parent / "models" / "amy.onnx"
 
 
 class VoiceResponder:
@@ -20,16 +21,33 @@ class VoiceResponder:
     def __init__(
         self,
         *,
-        model_path: str = _DEFAULT_MODEL_PATH,
+        model_path: str | Path = _DEFAULT_MODEL_PATH,
         piper_binary: str = "piper",
         player_binary: str = "aplay",
     ) -> None:
         self._model_path = model_path
         self._piper_binary = piper_binary
         self._player_binary = player_binary
+        self._enabled = True
+        if shutil.which(self._piper_binary) is None:
+            logger.error(
+                "Piper TTS disabled: '%s' not found. Install Piper.",
+                self._piper_binary,
+            )
+            self._enabled = False
+        elif shutil.which(self._player_binary) is None:
+            logger.error(
+                "Piper TTS disabled: '%s' not found. Install an audio player.",
+                self._player_binary,
+            )
+            self._enabled = False
 
     def speak(self, text: str, on_complete: Callable[[], None] | None = None) -> None:
         """Start voice playback on a background thread."""
+        if not self._enabled:
+            if on_complete is not None:
+                on_complete()
+            return
         thread = threading.Thread(
             target=self._speak_worker,
             args=(text, on_complete),

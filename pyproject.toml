@@ -21,6 +21,7 @@ dependencies = [
     # VAD + Transcription pipeline (issue #4)
     "faster-whisper>=1.0.0",
     "torch>=2.0.0",
+    "piper-tts>=1.5.0",
 ]
 
 [project.scripts]
