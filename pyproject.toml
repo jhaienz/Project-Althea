@@ -43,3 +43,11 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
 ]
+
+[tool.uv]
+# tflite-runtime has no wheel for Python 3.12+ (latest is cp311).
+# openwakeword supports onnxruntime as an alternative backend, which we use.
+# This override tells uv's resolver to skip tflite-runtime on modern Python.
+override-dependencies = [
+    "tflite-runtime; python_version < '3.12'",
+]
