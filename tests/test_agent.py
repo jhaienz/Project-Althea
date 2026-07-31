@@ -170,6 +170,16 @@ class TestDiscoverTools:
         tools = _discover_tools()
         assert all(isinstance(t, FunctionTool) for t in tools)
 
+    def test_service_tools_are_discovered(self) -> None:
+        names = {tool.name for tool in _discover_tools()}
+        assert {
+            "play_spotify",
+            "check_email",
+            "send_email",
+            "browser_navigate",
+            "browser_send_message",
+        } <= names
+
     def test_private_functions_are_excluded(self) -> None:
         """Functions starting with _ must never be wrapped."""
         tools = _discover_tools()

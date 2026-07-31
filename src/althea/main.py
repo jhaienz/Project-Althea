@@ -41,6 +41,7 @@ def _handle_sigint(sig: int, frame: object) -> None:  # noqa: ARG001
 def run() -> None:
     """Start the Althea main loop."""
     from althea.agent import AltheaAgent
+    from althea.tools.browser import browser_stop
     from althea.tts import VoiceResponder
     from althea.transcription import Transcriber
     from althea.vad import VoiceActivityDetector
@@ -154,6 +155,7 @@ def run() -> None:
             inactivity_timer.cancel()
         vad.stop()
         detector.stop()
+        asyncio.run(browser_stop())
         sys.exit(0)
 
 

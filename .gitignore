@@ -18,6 +18,7 @@ env/
 
 # Environment
 .env
+credentials.json
 
 # IDE
 .idea/

@@ -37,6 +37,7 @@ def test_wake_word_greeting_finishes_before_command_capture() -> None:
         patch("althea.tts.VoiceResponder", return_value=voice_responder),
         patch("althea.vad.VoiceActivityDetector", return_value=vad),
         patch("althea.wake_word.WakeWordDetector", side_effect=_build_detector),
+        patch("althea.tools.browser.browser_stop") as browser_stop,
         patch("althea.main.threading.Timer"),
         patch("signal.signal"),
         patch("sys.exit"),
@@ -48,6 +49,7 @@ def test_wake_word_greeting_finishes_before_command_capture() -> None:
         on_complete=voice_responder.speak.call_args.kwargs["on_complete"],
     )
     vad.start_capture.assert_called_once()
+    browser_stop.assert_called_once_with()
 
 
 def test_voice_response_finishes_before_follow_up_command_capture(caplog) -> None:

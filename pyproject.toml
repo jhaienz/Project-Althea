@@ -23,6 +23,11 @@ dependencies = [
     "torch>=2.0.0",
     "piper-tts>=1.5.0",
     "torchaudio>=2.11.0",
+    "spotipy>=2.26.0",
+    "google-api-python-client>=2.198.0",
+    "google-auth-oauthlib>=1.4.0",
+    "secretstorage>=3.5.0",
+    "playwright>=1.61.0",
 ]
 
 [project.scripts]
