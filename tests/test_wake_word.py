@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch, call
 import numpy as np
 import pytest
 
-from althea.wake_word import WakeWordDetector, PLACEHOLDER_WAKE_WORD, _DETECTION_THRESHOLD
+from althea.wake_word import WakeWordDetector, _WAKE_WORD_KEY, _DETECTION_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +86,7 @@ class TestWakeWordDetectorCallback:
         detector, _ = self._make_detector(on_wake)
 
         mock_model = MagicMock()
-        mock_model.predict.return_value = {PLACEHOLDER_WAKE_WORD: 0.9}
+        mock_model.predict.return_value = {_WAKE_WORD_KEY: 0.9}
         detector._model = mock_model
 
         chunk = _make_chunk()
@@ -100,7 +100,7 @@ class TestWakeWordDetectorCallback:
         detector, _ = self._make_detector(on_wake)
 
         mock_model = MagicMock()
-        mock_model.predict.return_value = {PLACEHOLDER_WAKE_WORD: 0.1}
+        mock_model.predict.return_value = {_WAKE_WORD_KEY: 0.1}
         detector._model = mock_model
 
         chunk = _make_chunk()
@@ -115,7 +115,7 @@ class TestWakeWordDetectorCallback:
 
         mock_model = MagicMock()
         below = _DETECTION_THRESHOLD - 0.001
-        mock_model.predict.return_value = {PLACEHOLDER_WAKE_WORD: below}
+        mock_model.predict.return_value = {_WAKE_WORD_KEY: below}
         detector._model = mock_model
 
         detector._audio_callback(_indata(_make_chunk()), 1280, None, None)
@@ -127,7 +127,7 @@ class TestWakeWordDetectorCallback:
         detector, _ = self._make_detector(on_wake)
 
         mock_model = MagicMock()
-        mock_model.predict.return_value = {PLACEHOLDER_WAKE_WORD: _DETECTION_THRESHOLD}
+        mock_model.predict.return_value = {_WAKE_WORD_KEY: _DETECTION_THRESHOLD}
         detector._model = mock_model
 
         detector._audio_callback(_indata(_make_chunk()), 1280, None, None)
@@ -139,7 +139,7 @@ class TestWakeWordDetectorCallback:
         detector, _ = self._make_detector(on_wake)
 
         mock_model = MagicMock()
-        mock_model.predict.return_value = {PLACEHOLDER_WAKE_WORD: 0.99}
+        mock_model.predict.return_value = {_WAKE_WORD_KEY: 0.99}
         detector._model = mock_model
         detector._stop_event.set()  # simulate shutdown
 
@@ -161,7 +161,7 @@ class TestWakeWordDetectorCallback:
         detector, _ = self._make_detector(on_wake)
 
         mock_model = MagicMock()
-        mock_model.predict.return_value = {PLACEHOLDER_WAKE_WORD: 0.0}
+        mock_model.predict.return_value = {_WAKE_WORD_KEY: 0.0}
         detector._model = mock_model
 
         chunk = _make_chunk(value=42)
@@ -282,11 +282,11 @@ class TestWakeWordDetectorInit:
 
     def test_default_wake_word(self):
         detector = WakeWordDetector(on_wake_word=MagicMock())
-        assert detector._wake_word == PLACEHOLDER_WAKE_WORD
+        assert detector._wake_word == _WAKE_WORD_KEY
 
     def test_custom_wake_word(self):
-        detector = WakeWordDetector(on_wake_word=MagicMock(), wake_word="alexa")
-        assert detector._wake_word == "alexa"
+        detector = WakeWordDetector(on_wake_word=MagicMock(), wake_word="hey_jarvis")
+        assert detector._wake_word == "hey_jarvis"
 
     def test_custom_threshold(self):
         detector = WakeWordDetector(on_wake_word=MagicMock(), threshold=0.8)

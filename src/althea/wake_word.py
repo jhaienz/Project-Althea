@@ -1,8 +1,7 @@
 """Wake word detection module.
 
 Streams audio continuously from the default microphone and calls a callback
-when the placeholder wake word ("Hey Jarvis") is detected. The custom
-"Althea" model will replace this once it is trained (see ADR-0001).
+when "Althea" is detected using the bundled custom ONNX model.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import numpy as np
+from pathlib import Path
 
 if TYPE_CHECKING:
     import sounddevice as sd  # only used for type hints
@@ -28,8 +28,11 @@ _CHUNK_SAMPLES: int = 1_280
 # Minimum model score to count as a detection (0–1 scale).
 _DETECTION_THRESHOLD: float = 0.5
 
-# Name of the placeholder pre-trained model bundled with openWakeWord.
-PLACEHOLDER_WAKE_WORD: str = "hey_jarvis"
+# Path to the bundled custom Althea ONNX wake word model.
+_MODEL_PATH: Path = Path(__file__).parent / "models" / "althea.onnx"
+
+# Prediction dict key produced by openWakeWord for the althea model.
+_WAKE_WORD_KEY: str = "althea"
 
 
 class WakeWordDetector:
@@ -50,7 +53,7 @@ class WakeWordDetector:
         self,
         on_wake_word: Callable[[], None],
         *,
-        wake_word: str = PLACEHOLDER_WAKE_WORD,
+        wake_word: str = _WAKE_WORD_KEY,
         threshold: float = _DETECTION_THRESHOLD,
     ) -> None:
         """Initialise the detector.
@@ -58,8 +61,8 @@ class WakeWordDetector:
         Args:
             on_wake_word: Called (in the audio thread) every time the wake
                 word is detected above *threshold*.
-            wake_word: The openWakeWord model name to load.  Defaults to the
-                bundled ``"hey_jarvis"`` placeholder.
+            wake_word: The prediction key to read from the model output.
+                Defaults to ``"althea"`` (the bundled custom model).
             threshold: Detection score threshold in the range ``[0, 1]``.
         """
         self._on_wake_word = on_wake_word
@@ -111,36 +114,13 @@ class WakeWordDetector:
     # ------------------------------------------------------------------
 
     def _load_model(self) -> object:
-        """Lazy-initialise the openWakeWord model (deferred for testability).
-
-        Downloads the model file on first run if it is not already cached
-        locally.  Replace ``PLACEHOLDER_WAKE_WORD`` with the path to the
-        trained ``althea.onnx`` model once it has been trained.
-        """
-        import os
-
-        import openwakeword  # type: ignore[import-untyped]
+        """Lazy-initialise the openWakeWord model from the bundled ONNX file."""
         from openwakeword.model import Model  # type: ignore[import-untyped]
-        from openwakeword.utils import download_models  # type: ignore[import-untyped]
 
-        # Download the placeholder model if it hasn't been fetched yet.
-        # TODO: swap wake_word for the path to the trained althea.onnx once
-        #       the custom model is ready — no other code changes needed.
-        onnx_paths = openwakeword.get_pretrained_model_paths("onnx")
-        model_cached = any(
-            self._wake_word.replace(" ", "_") in p and os.path.exists(p)
-            for p in onnx_paths
-        )
-        if not model_cached:
-            logger.info(
-                "Wake word model not found locally — downloading '%s' …",
-                self._wake_word,
-            )
-            download_models([f"{self._wake_word}_v0.1"])
-
-        logger.info("Loading wake word model '%s' …", self._wake_word)
+        model_path = str(_MODEL_PATH)
+        logger.info("Loading wake word model from '%s' …", model_path)
         model = Model(
-            wakeword_models=[self._wake_word],
+            wakeword_models=[model_path],
             inference_framework="onnx",
         )
         logger.info("Wake word model loaded.")
