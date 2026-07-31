@@ -43,7 +43,7 @@ def run() -> None:
         """Called by VoiceActivityDetector with the captured Utterance audio."""
         text = transcriber.transcribe(audio)
         if text:
-            print(f"[Althea heard] {text}")
+            logger.info("Command: %s", text)
         else:
             logger.warning("Transcription returned empty text.")
 

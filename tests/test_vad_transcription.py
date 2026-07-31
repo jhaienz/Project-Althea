@@ -6,11 +6,12 @@ run without a real microphone, GPU, or downloaded models.
 
 from __future__ import annotations
 
+import queue
 import sys
 import threading
 import time
 import types
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -20,9 +21,13 @@ from althea.vad import (
     VoiceActivityDetector,
     _SAMPLE_RATE,
     _CHUNK_SAMPLES,
-    _SILENCE_CHUNKS,
+    _SILENCE_THRESHOLD_SECONDS,
     _SPEECH_PROBABILITY_THRESHOLD,
+    _seconds_to_chunks,
+    _int16_to_float32,
 )
+
+_SILENCE_CHUNKS = _seconds_to_chunks(_SILENCE_THRESHOLD_SECONDS)
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +83,35 @@ def mock_sounddevice():
 
 
 # ---------------------------------------------------------------------------
+# Helper function tests
+# ---------------------------------------------------------------------------
+
+
+class TestHelpers:
+    """Tests for module-level helper functions."""
+
+    def test_seconds_to_chunks_basic(self):
+        chunks = _seconds_to_chunks(1.5)
+        assert chunks == int(1.5 * _SAMPLE_RATE / _CHUNK_SAMPLES)
+
+    def test_int16_to_float32_max_value(self):
+        chunk = np.array([32767], dtype=np.int16)
+        result = _int16_to_float32(chunk)
+        assert result.dtype == np.float32
+        assert result[0] == pytest.approx(32767 / 32768.0, rel=1e-4)
+
+    def test_int16_to_float32_zero(self):
+        chunk = np.zeros(10, dtype=np.int16)
+        result = _int16_to_float32(chunk)
+        np.testing.assert_array_equal(result, np.zeros(10, dtype=np.float32))
+
+    def test_int16_to_float32_negative(self):
+        chunk = np.array([-32768], dtype=np.int16)
+        result = _int16_to_float32(chunk)
+        assert result[0] == pytest.approx(-32768 / 32768.0, rel=1e-4)
+
+
+# ---------------------------------------------------------------------------
 # Transcriber tests
 # ---------------------------------------------------------------------------
 
@@ -99,39 +133,16 @@ class TestTranscriberInit:
 
 
 class TestTranscriberLoadModel:
-    """Tests for _load_model — OpenVINO path and CPU fallback."""
+    """Tests for _load_model."""
 
-    def _make_mock_whisper_model(self, text: str = "hello") -> MagicMock:
-        """Return a mock WhisperModel whose transcribe() yields one segment."""
-        seg = MagicMock()
-        seg.text = text
-        model = MagicMock()
-        model.transcribe.return_value = ([seg], MagicMock())
-        return model
-
-    def test_load_model_tries_openvino_first(self):
-        """_load_model calls WhisperModel with device='openvino' first."""
-        mock_model = MagicMock()
-
-        with patch("althea.transcription.Transcriber._load_model", return_value=mock_model):
-            t = Transcriber()
-            t._model = mock_model
-            # If we patched _load_model, just verify transcribe works
-            seg = MagicMock()
-            seg.text = "test"
-            mock_model.transcribe.return_value = ([seg], MagicMock())
-            result = t.transcribe(np.zeros(16000, dtype=np.float32))
-            assert result == "test"
-
-    def test_load_model_falls_back_to_cpu_when_openvino_fails(self):
-        """When OpenVINO raises, _load_model falls back to CPU."""
+    def test_load_model_uses_cpu_device(self):
+        """_load_model calls WhisperModel with device='cpu'."""
         import faster_whisper
 
         cpu_model = MagicMock()
 
         def _fake_whisper(model_size, device, compute_type):
-            if device == "openvino":
-                raise RuntimeError("OpenVINO not available")
+            assert device == "cpu"
             return cpu_model
 
         with patch.object(faster_whisper, "WhisperModel", side_effect=_fake_whisper):
@@ -139,20 +150,35 @@ class TestTranscriberLoadModel:
             model = t._load_model()
         assert model is cpu_model
 
-    def test_load_model_uses_openvino_when_available(self):
-        """When OpenVINO succeeds, the OpenVINO model is returned."""
-        openvino_model = MagicMock()
+    def test_load_model_uses_int8_compute_type(self):
+        """_load_model calls WhisperModel with compute_type='int8'."""
+        import faster_whisper
+
+        received: dict[str, str] = {}
 
         def _fake_whisper(model_size, device, compute_type):
-            if device == "openvino":
-                return openvino_model
-            raise AssertionError("Should not reach CPU path")
+            received["compute_type"] = compute_type
+            return MagicMock()
 
-        import faster_whisper
         with patch.object(faster_whisper, "WhisperModel", side_effect=_fake_whisper):
             t = Transcriber()
-            model = t._load_model()
-        assert model is openvino_model
+            t._load_model()
+
+        assert received["compute_type"] == _COMPUTE_TYPE
+
+    def test_load_model_logs_openvino_limitation(self, caplog):
+        """_load_model logs a warning about the CTranslate2/OpenVINO limitation."""
+        import faster_whisper
+        import logging
+
+        with (
+            patch.object(faster_whisper, "WhisperModel", return_value=MagicMock()),
+            caplog.at_level(logging.WARNING, logger="althea.transcription"),
+        ):
+            t = Transcriber()
+            t._load_model()
+
+        assert any("OpenVINO" in r.message for r in caplog.records)
 
 
 class TestTranscriberTranscribe:
@@ -168,20 +194,17 @@ class TestTranscriberTranscribe:
 
     def test_transcribe_returns_text(self):
         t, _ = self._make_transcriber_with_mock_model("hello world")
-        audio = _make_float32_audio()
-        result = t.transcribe(audio)
+        result = t.transcribe(_make_float32_audio())
         assert result == "hello world"
 
     def test_transcribe_joins_multiple_segments(self):
         t, _ = self._make_transcriber_with_mock_model("hello", "world")
-        audio = _make_float32_audio()
-        result = t.transcribe(audio)
+        result = t.transcribe(_make_float32_audio())
         assert result == "hello world"
 
     def test_transcribe_strips_whitespace(self):
         t, _ = self._make_transcriber_with_mock_model("  hello  ")
-        audio = _make_float32_audio()
-        result = t.transcribe(audio)
+        result = t.transcribe(_make_float32_audio())
         assert result == "hello"
 
     def test_transcribe_returns_empty_string_when_no_segments(self):
@@ -189,14 +212,13 @@ class TestTranscriberTranscribe:
         mock_model.transcribe.return_value = ([], MagicMock())
         t = Transcriber()
         t._model = mock_model
-        result = t.transcribe(_make_float32_audio())
-        assert result == ""
+        assert t.transcribe(_make_float32_audio()) == ""
 
-    def test_transcribe_passes_audio_to_model(self):
+    def test_transcribe_passes_utterance_to_model(self):
         t, mock_model = self._make_transcriber_with_mock_model("test")
         audio = np.ones(16000, dtype=np.float32)
         t.transcribe(audio)
-        args, kwargs = mock_model.transcribe.call_args
+        args, _ = mock_model.transcribe.call_args
         np.testing.assert_array_equal(args[0], audio)
 
     def test_transcribe_uses_english_language(self):
@@ -209,21 +231,17 @@ class TestTranscriberTranscribe:
         """Model is loaded on the first transcribe() call, not at init."""
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([], MagicMock())
-
         t = Transcriber()
         assert t._model is None
-
         with patch.object(t, "_load_model", return_value=mock_model) as mock_load:
             t.transcribe(_make_float32_audio())
             mock_load.assert_called_once()
-
         assert t._model is mock_model
 
     def test_transcribe_does_not_reload_model_on_second_call(self):
         """Subsequent transcribe() calls reuse the cached model."""
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([], MagicMock())
-
         t = Transcriber()
         with patch.object(t, "_load_model", return_value=mock_model) as mock_load:
             t.transcribe(_make_float32_audio())
@@ -241,11 +259,15 @@ class TestVoiceActivityDetectorInit:
 
     def test_default_silence_threshold(self):
         vad = VoiceActivityDetector(on_utterance=MagicMock())
-        assert vad._silence_threshold_seconds == 1.5
+        assert vad._silence_threshold_seconds == _SILENCE_THRESHOLD_SECONDS
 
     def test_custom_silence_threshold(self):
         vad = VoiceActivityDetector(on_utterance=MagicMock(), silence_threshold_seconds=2.0)
         assert vad._silence_threshold_seconds == 2.0
+
+    def test_silence_chunks_derived_from_threshold(self):
+        vad = VoiceActivityDetector(on_utterance=MagicMock(), silence_threshold_seconds=2.0)
+        assert vad._silence_chunks == _seconds_to_chunks(2.0)
 
     def test_default_speech_probability_threshold(self):
         vad = VoiceActivityDetector(on_utterance=MagicMock())
@@ -263,24 +285,6 @@ class TestVoiceActivityDetectorInit:
 class TestVoiceActivityDetectorPredictSpeech:
     """Tests for _predict_speech — the Silero VAD wrapper."""
 
-    def _make_vad_with_mock_model(self, prob: float) -> VoiceActivityDetector:
-        mock_model = MagicMock(return_value=MagicMock(item=MagicMock(return_value=prob)))
-        vad = VoiceActivityDetector(on_utterance=MagicMock())
-        vad._vad_model = mock_model
-        return vad
-
-    def test_predict_speech_returns_float(self):
-        vad = self._make_vad_with_mock_model(0.8)
-        with patch("torch.from_numpy", return_value=MagicMock(unsqueeze=MagicMock(return_value=MagicMock()))):
-            import torch
-            with patch.object(torch, "from_numpy") as mock_from_numpy:
-                tensor_mock = MagicMock()
-                mock_from_numpy.return_value = tensor_mock
-                tensor_mock.unsqueeze.return_value = tensor_mock
-                vad._vad_model.return_value = MagicMock(item=MagicMock(return_value=0.8))
-                result = vad._predict_speech(_make_int16_chunk())
-        assert isinstance(result, float)
-
     def test_predict_speech_converts_int16_to_float32(self):
         """_predict_speech normalises int16 to float32 before passing to model."""
         import torch
@@ -293,162 +297,155 @@ class TestVoiceActivityDetectorPredictSpeech:
 
         vad = VoiceActivityDetector(on_utterance=MagicMock())
         vad._vad_model = _fake_model
+        vad._torch = torch
 
-        chunk = np.full(_CHUNK_SAMPLES, 32767, dtype=np.int16)  # max int16
-        result = vad._predict_speech(chunk)
+        chunk = np.full(_CHUNK_SAMPLES, 32767, dtype=np.int16)
+        vad._predict_speech(chunk)
 
         assert len(received_tensors) == 1
-        # Values should be ~1.0 (normalised), not 32767
         assert received_tensors[0].max() == pytest.approx(32767 / 32768.0, rel=1e-4)
 
+    def test_predict_speech_returns_model_probability(self):
+        """_predict_speech returns the float probability from the model."""
+        import torch
 
-class TestVoiceActivityDetectorCaptureLogic:
-    """Tests for the utterance capture state machine via _capture_utterance."""
+        vad = VoiceActivityDetector(on_utterance=MagicMock())
+        vad._torch = torch
 
-    def _make_vad(self, on_utterance: MagicMock | None = None) -> VoiceActivityDetector:
-        if on_utterance is None:
-            on_utterance = MagicMock()
-        vad = VoiceActivityDetector(on_utterance=on_utterance)
-        return vad
+        prob_value = 0.78
+        fake_result = MagicMock()
+        fake_result.item.return_value = prob_value
 
-    def _make_mock_vad_model(self, probs: list[float]) -> MagicMock:
-        """Return a mock Silero VAD model that cycles through *probs*."""
+        def _fake_model(tensor, sr):
+            return fake_result
+
+        vad._vad_model = _fake_model
+        result = vad._predict_speech(_make_int16_chunk())
+        assert result == pytest.approx(prob_value)
+
+
+class TestRunVADLoop:
+    """Tests for the _run_vad_loop state machine (off-callback inference)."""
+
+    def _make_vad_with_probs(self, probs: list[float]) -> VoiceActivityDetector:
+        """Return a VoiceActivityDetector whose _predict_speech cycles through probs."""
+        import torch
+
         prob_iter = iter(probs)
 
-        def _model(tensor, sr):
-            prob = next(prob_iter, 0.0)
-            return MagicMock(item=MagicMock(return_value=prob))
+        def _fake_model(tensor, sr):
+            return MagicMock(item=MagicMock(return_value=next(prob_iter, 0.0)))
 
-        return _model
+        vad = VoiceActivityDetector(on_utterance=MagicMock())
+        vad._vad_model = _fake_model
+        vad._torch = torch
+        return vad
 
-    def test_on_utterance_called_with_float32_audio(self, mock_sounddevice):
-        """on_utterance receives a float32 numpy array."""
-        on_utterance = MagicMock()
-        vad = self._make_vad(on_utterance)
+    def _fill_queue(self, q: "queue.Queue", probs: list[float]) -> None:
+        """Fill *q* with int16 chunks (speech=1000, silence=0) matching probs."""
+        for prob in probs:
+            value = 1000 if prob >= _SPEECH_PROBABILITY_THRESHOLD else 0
+            q.put(_make_int16_chunk(value=value))
+        q.put(None)  # sentinel
 
-        # Simulate: 3 speech chunks then enough silence chunks to trigger end.
-        speech_probs = [0.9] * 3 + [0.1] * (_SILENCE_CHUNKS + 1)
-        vad._vad_model = self._make_mock_vad_model(speech_probs)
+    def test_speech_chunks_are_buffered(self):
+        """Chunks classified as speech are returned in the buffer."""
+        probs = [0.9, 0.9, 0.9] + [0.0] * (_SILENCE_CHUNKS + 1)
+        vad = self._make_vad_with_probs(probs)
 
-        # Drive the callback directly (bypass real sounddevice).
-        audio_buffer: list[np.ndarray] = []
-        silent_chunks = 0
-        speech_started = False
+        q: queue.Queue = queue.Queue()
+        self._fill_queue(q, probs)
 
-        for prob in [0.9, 0.9, 0.9] + [0.1] * (_SILENCE_CHUNKS + 1):
-            chunk = _make_int16_chunk(value=1000 if prob > 0.5 else 0)
-            is_speech = prob >= _SPEECH_PROBABILITY_THRESHOLD
-
-            if is_speech:
-                speech_started = True
-                silent_chunks = 0
-                audio_buffer.append(chunk.copy())
-            elif speech_started:
-                audio_buffer.append(chunk.copy())
-                silent_chunks += 1
-                if silent_chunks >= _SILENCE_CHUNKS:
-                    break
-
-        utterance_int16 = np.concatenate(audio_buffer)
-        utterance_float32 = utterance_int16.astype(np.float32) / 32768.0
-        on_utterance(utterance_float32)
-
-        on_utterance.assert_called_once()
-        received_audio = on_utterance.call_args[0][0]
-        assert received_audio.dtype == np.float32
+        result = vad._run_vad_loop(q)
+        # 3 speech + _SILENCE_CHUNKS trailing silence chunks
+        assert len(result) == 3 + _SILENCE_CHUNKS
 
     def test_leading_silence_is_discarded(self):
-        """Frames before speech begins are not included in the Utterance."""
-        collected: list[np.ndarray] = []
+        """Frames before speech begins are not included in the buffer."""
+        leading = 5
+        speech = 3
+        probs = [0.0] * leading + [0.9] * speech + [0.0] * (_SILENCE_CHUNKS + 1)
+        vad = self._make_vad_with_probs(probs)
 
-        def _capture(audio: np.ndarray) -> None:
-            collected.append(audio)
+        q: queue.Queue = queue.Queue()
+        self._fill_queue(q, probs)
 
-        vad = self._make_vad(on_utterance=_capture)
+        result = vad._run_vad_loop(q)
+        assert len(result) == speech + _SILENCE_CHUNKS
 
-        # 5 silence chunks, then 3 speech chunks, then enough silence to end.
-        leading_silence = 5
-        speech_chunks = 3
-        trailing_silence = _SILENCE_CHUNKS
+    def test_empty_result_when_no_speech(self):
+        """If only silence is detected, _run_vad_loop returns an empty list."""
+        probs = [0.0] * 20
+        vad = self._make_vad_with_probs(probs)
 
-        audio_buffer: list[np.ndarray] = []
-        silent_chunks = 0
-        speech_started = False
-        probs = (
-            [0.0] * leading_silence
-            + [0.9] * speech_chunks
-            + [0.0] * (trailing_silence + 1)
-        )
+        q: queue.Queue = queue.Queue()
+        self._fill_queue(q, probs)
 
-        for prob in probs:
-            chunk = _make_int16_chunk(value=100 if prob > 0.5 else 0)
-            is_speech = prob >= _SPEECH_PROBABILITY_THRESHOLD
-            if is_speech:
-                speech_started = True
-                silent_chunks = 0
-                audio_buffer.append(chunk.copy())
-            elif speech_started:
-                audio_buffer.append(chunk.copy())
-                silent_chunks += 1
-                if silent_chunks >= _SILENCE_CHUNKS:
-                    break
+        result = vad._run_vad_loop(q)
+        assert result == []
 
-        utterance = np.concatenate(audio_buffer).astype(np.float32) / 32768.0
-        _capture(utterance)
+    def test_result_chunks_are_int16(self):
+        """Chunks returned by _run_vad_loop are int16 (conversion happens after)."""
+        probs = [0.9] * 3 + [0.0] * (_SILENCE_CHUNKS + 1)
+        vad = self._make_vad_with_probs(probs)
 
-        # Only speech + trailing silence should be in the utterance,
-        # NOT the leading silence chunks.
-        expected_chunks = speech_chunks + trailing_silence
-        expected_samples = expected_chunks * _CHUNK_SAMPLES
-        assert len(collected[0]) == expected_samples
+        q: queue.Queue = queue.Queue()
+        self._fill_queue(q, probs)
 
-    def test_no_utterance_callback_when_no_speech_detected(self, mock_sounddevice):
-        """If only silence is captured, on_utterance is NOT called."""
+        result = vad._run_vad_loop(q)
+        assert all(c.dtype == np.int16 for c in result)
+
+
+class TestVoiceActivityDetectorStateReset:
+    """Tests that VAD state is reset between Utterances."""
+
+    def test_reset_states_called_before_each_capture(self, mock_sounddevice):
+        """reset_states() is called on the model before each utterance capture."""
         on_utterance = MagicMock()
-        vad = self._make_vad(on_utterance)
+        vad = VoiceActivityDetector(on_utterance=on_utterance)
 
-        # Simulate: entire session is silence → audio_buffer stays empty.
-        audio_buffer: list[np.ndarray] = []
-        speech_started = False
+        mock_model = MagicMock()
+        mock_model.reset_states = MagicMock()
 
-        # Drive with all-silence input
-        for _ in range(10):
-            chunk = _make_int16_chunk(value=0)
-            is_speech = False
-            if is_speech:
-                pass  # never
-            elif speech_started:
-                audio_buffer.append(chunk.copy())
+        with patch.object(vad, "_load_vad_model", return_value=mock_model):
+            with patch.object(vad, "_run_vad_loop", return_value=[]):
+                vad._capture_utterance()
 
-        # Since audio_buffer is empty, on_utterance should not be called.
-        if not audio_buffer:
-            pass  # mirrors the code path in _capture_utterance
-        else:
-            on_utterance(np.zeros(1, dtype=np.float32))
+        mock_model.reset_states.assert_called_once()
 
-        on_utterance.assert_not_called()
+    def test_reset_states_skipped_if_model_lacks_method(self, mock_sounddevice):
+        """If the model has no reset_states(), capture proceeds without error."""
+        on_utterance = MagicMock()
+        vad = VoiceActivityDetector(on_utterance=on_utterance)
+
+        mock_model = MagicMock(spec=[])  # no reset_states attribute
+
+        with patch.object(vad, "_load_vad_model", return_value=mock_model):
+            with patch.object(vad, "_run_vad_loop", return_value=[]):
+                vad._capture_utterance()  # should not raise
+
+
+class TestVoiceActivityDetectorLifecycle:
+    """Tests for start_capture / stop lifecycle."""
 
     def test_stop_before_start_is_safe(self):
         """stop() before start_capture() raises no error."""
-        vad = self._make_vad()
-        vad.stop()  # should be a no-op
+        vad = VoiceActivityDetector(on_utterance=MagicMock())
+        vad.stop()
 
-    def test_start_capture_while_already_capturing_is_ignored(self, mock_sounddevice):
+    def test_start_capture_while_already_capturing_is_ignored(self):
         """A second start_capture() while a capture is live is ignored."""
-        on_utterance = MagicMock()
-        vad = self._make_vad(on_utterance)
+        vad = VoiceActivityDetector(on_utterance=MagicMock())
 
-        with patch.object(vad, "_load_vad_model", return_value=MagicMock()):
-            with patch.object(vad, "_capture_utterance"):
-                vad._capture_thread = threading.Thread(target=lambda: time.sleep(10), daemon=True)
-                vad._capture_thread.start()
+        vad._capture_thread = threading.Thread(target=lambda: time.sleep(10), daemon=True)
+        vad._capture_thread.start()
 
-                thread_before = vad._capture_thread
-                vad.start_capture()  # should be ignored
-                assert vad._capture_thread is thread_before
+        thread_before = vad._capture_thread
+        vad.start_capture()
+        assert vad._capture_thread is thread_before
 
-                vad._stop_capture_event.set()
-                vad._capture_thread.join(timeout=1)
+        vad._stop_capture_event.set()
+        vad._capture_thread.join(timeout=1)
 
 
 class TestVADMissingDependencies:
@@ -466,8 +463,11 @@ class TestVADMissingDependencies:
                 raise ImportError("no sounddevice")
             return real_import(name, *args, **kwargs)
 
+        import torch
+
         vad = VoiceActivityDetector(on_utterance=MagicMock())
-        vad._vad_model = MagicMock()  # skip model load
+        vad._vad_model = MagicMock()
+        vad._torch = torch
 
         with (
             patch("builtins.__import__", side_effect=_block_sounddevice),
@@ -500,39 +500,41 @@ class TestVADMissingDependencies:
 class TestVADTranscriptionPipeline:
     """Integration tests for the VAD → Transcription handoff."""
 
-    def test_pipeline_produces_text_from_audio(self):
-        """Simulate: VAD captures audio, Transcriber produces text."""
+    def test_pipeline_produces_text_from_utterance(self):
+        """Simulate: VAD captures Utterance, Transcriber produces Command text."""
         transcribed: list[str] = []
 
-        # Mock transcriber
         mock_transcriber = MagicMock()
         mock_transcriber.transcribe.return_value = "open the browser"
 
         def _on_utterance(audio: np.ndarray) -> None:
             text = mock_transcriber.transcribe(audio)
             transcribed.append(text)
-            print(text)  # per AC: text printed to console
 
         vad = VoiceActivityDetector(on_utterance=_on_utterance)
 
-        # Simulate captured audio being handed off.
         fake_audio = _make_float32_audio(seconds=1.0)
         _on_utterance(fake_audio)
 
         assert transcribed == ["open the browser"]
         mock_transcriber.transcribe.assert_called_once()
 
-    def test_pipeline_prints_transcribed_text(self, capsys):
-        """Transcribed Command is printed to stdout (per acceptance criteria)."""
+    def test_pipeline_logs_transcribed_command(self, caplog):
+        """Transcribed Command text is logged (per project logging standard)."""
+        import logging
+
+        # Simulate main.py's _on_utterance wired to a Transcriber.
         mock_transcriber = MagicMock()
         mock_transcriber.transcribe.return_value = "set a timer for 5 minutes"
 
+        main_logger = logging.getLogger("althea.main")
+
         def _on_utterance(audio: np.ndarray) -> None:
             text = mock_transcriber.transcribe(audio)
-            print(text)
+            if text:
+                main_logger.info("Command: %s", text)
 
-        fake_audio = _make_float32_audio()
-        _on_utterance(fake_audio)
+        with caplog.at_level(logging.INFO, logger="althea.main"):
+            _on_utterance(_make_float32_audio())
 
-        captured = capsys.readouterr()
-        assert "set a timer for 5 minutes" in captured.out
+        assert any("set a timer for 5 minutes" in r.message for r in caplog.records)

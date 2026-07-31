@@ -8,6 +8,7 @@ The resulting Utterance audio is then passed to a callback for Transcription.
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -29,12 +30,19 @@ _CHUNK_SAMPLES: int = 512
 # Silence duration (in seconds) before the Utterance is considered complete.
 _SILENCE_THRESHOLD_SECONDS: float = 1.5
 
-# Number of silent chunks that constitute the silence threshold.
-_SILENCE_CHUNKS: int = int(_SILENCE_THRESHOLD_SECONDS * _SAMPLE_RATE / _CHUNK_SAMPLES)
-
 # Silero VAD speech probability threshold (0–1).  Chunks above this are
 # considered "speech"; chunks below are "silence".
 _SPEECH_PROBABILITY_THRESHOLD: float = 0.5
+
+
+def _seconds_to_chunks(seconds: float) -> int:
+    """Convert a duration in seconds to a number of VAD chunks."""
+    return int(seconds * _SAMPLE_RATE / _CHUNK_SAMPLES)
+
+
+def _int16_to_float32(chunk: np.ndarray) -> np.ndarray:
+    """Normalise an int16 PCM array to float32 in the range [-1, 1]."""
+    return chunk.astype(np.float32) / 32768.0
 
 
 class VoiceActivityDetector:
@@ -44,10 +52,13 @@ class VoiceActivityDetector:
     callback), the detector streams audio, accumulates speech frames, and
     calls *on_utterance* once ~1.5 s of silence is detected.
 
+    VAD inference runs on a dedicated inference thread (not the PortAudio
+    callback thread) to avoid real-time audio buffer underflows.
+
     Usage::
 
         def handle_utterance(audio: np.ndarray) -> None:
-            print("Got audio:", audio.shape)
+            print("Utterance captured:", audio.shape)
 
         vad = VoiceActivityDetector(on_utterance=handle_utterance)
         vad.start_capture()   # call this after wake word fires
@@ -73,11 +84,10 @@ class VoiceActivityDetector:
         self._on_utterance = on_utterance
         self._silence_threshold_seconds = silence_threshold_seconds
         self._speech_probability_threshold = speech_probability_threshold
-        self._silence_chunks = int(
-            silence_threshold_seconds * _SAMPLE_RATE / _CHUNK_SAMPLES
-        )
+        self._silence_chunks = _seconds_to_chunks(silence_threshold_seconds)
 
         self._vad_model: object | None = None  # silero_vad model, lazy-loaded
+        self._torch: object | None = None  # torch module, cached after first load
         self._capture_thread: threading.Thread | None = None
         self._stop_capture_event = threading.Event()
 
@@ -125,6 +135,7 @@ class VoiceActivityDetector:
         """Lazy-load the Silero VAD model via torch.hub."""
         import torch  # type: ignore[import-untyped]
 
+        self._torch = torch
         logger.info("Loading Silero VAD model …")
         model, _ = torch.hub.load(
             repo_or_dir="snakers4/silero-vad",
@@ -137,16 +148,26 @@ class VoiceActivityDetector:
         return model
 
     def _predict_speech(self, chunk: np.ndarray) -> float:
-        """Return Silero VAD speech probability for *chunk* (int16 → float32)."""
-        import torch  # type: ignore[import-untyped]
+        """Return Silero VAD speech probability for *chunk* (int16 input).
 
-        audio_float = chunk.astype(np.float32) / 32768.0
+        Args:
+            chunk: Flat int16 audio array of exactly ``_CHUNK_SAMPLES`` samples.
+
+        Returns:
+            Speech probability in [0, 1].
+        """
+        torch = self._torch
+        audio_float = _int16_to_float32(chunk)
         tensor = torch.from_numpy(audio_float).unsqueeze(0)
         prob: float = self._vad_model(tensor, _SAMPLE_RATE).item()
         return prob
 
     def _capture_utterance(self) -> None:
-        """Main capture loop — runs in its own thread."""
+        """Main capture loop — runs in its own thread.
+
+        VAD inference runs on this thread (not the PortAudio callback thread)
+        via a chunk queue, avoiding real-time buffer underflows.
+        """
         try:
             import sounddevice as sd  # type: ignore[import-untyped]
         except ImportError as exc:
@@ -160,9 +181,12 @@ class VoiceActivityDetector:
                 logger.exception("Failed to load Silero VAD model.")
                 return
 
-        audio_buffer: list[np.ndarray] = []
-        silent_chunks: int = 0
-        speech_started: bool = False
+        # Reset Silero VAD's internal RNN state so previous Utterances don't
+        # bleed into this capture session.
+        if hasattr(self._vad_model, "reset_states"):
+            self._vad_model.reset_states()
+
+        chunk_queue: queue.Queue[np.ndarray | None] = queue.Queue()
 
         def _callback(
             indata: np.ndarray,
@@ -170,32 +194,15 @@ class VoiceActivityDetector:
             time_info: object,  # noqa: ARG001
             status: object,
         ) -> None:
-            nonlocal silent_chunks, speech_started
-
+            """Minimal PortAudio callback — just enqueues raw chunks."""
             if status:
                 logger.debug("VAD audio status: %s", status)
-
             if self._stop_capture_event.is_set():
+                chunk_queue.put(None)  # sentinel
                 raise sd.CallbackStop
+            chunk_queue.put(indata[:, 0].copy())
 
-            chunk = indata[:, 0]  # (N, 1) → (N,)
-
-            prob = self._predict_speech(chunk)
-            is_speech = prob >= self._speech_probability_threshold
-
-            if is_speech:
-                speech_started = True
-                silent_chunks = 0
-                audio_buffer.append(chunk.copy())
-            elif speech_started:
-                # Still buffer silence so we don't clip trailing words.
-                audio_buffer.append(chunk.copy())
-                silent_chunks += 1
-                if silent_chunks >= self._silence_chunks:
-                    raise sd.CallbackStop
-            # If we haven't heard speech yet, discard leading silence.
-
-        logger.info("VAD listening for speech …")
+        logger.info("VAD listening for the user's Utterance …")
         try:
             with sd.InputStream(
                 samplerate=_SAMPLE_RATE,
@@ -204,9 +211,9 @@ class VoiceActivityDetector:
                 blocksize=_CHUNK_SAMPLES,
                 callback=_callback,
             ):
-                self._stop_capture_event.wait()
+                audio_buffer = self._run_vad_loop(chunk_queue)
         except sd.CallbackStop:
-            pass  # raised intentionally to end the stream
+            pass  # raised intentionally by _callback to end the stream
         except sd.PortAudioError as exc:
             logger.error("Microphone unavailable during VAD capture: %s", exc)
             return
@@ -215,14 +222,51 @@ class VoiceActivityDetector:
             return
 
         if not audio_buffer:
-            logger.warning("VAD capture ended with no speech detected.")
+            logger.warning("VAD capture ended with no Utterance detected.")
             return
 
-        # Concatenate buffered int16 chunks, convert to float32 for Whisper.
-        utterance_int16 = np.concatenate(audio_buffer)
-        utterance_float32 = utterance_int16.astype(np.float32) / 32768.0
+        utterance = np.concatenate([_int16_to_float32(c) for c in audio_buffer])
         logger.info(
             "Utterance captured: %.2f s",
-            len(utterance_float32) / _SAMPLE_RATE,
+            len(utterance) / _SAMPLE_RATE,
         )
-        self._on_utterance(utterance_float32)
+        self._on_utterance(utterance)
+
+    def _run_vad_loop(
+        self, chunk_queue: "queue.Queue[np.ndarray | None]"
+    ) -> list[np.ndarray]:
+        """Consume *chunk_queue* and return buffered speech chunks (int16).
+
+        Runs VAD inference on *this* thread (off the PortAudio callback).
+        Accumulates chunks once speech starts; stops after ``_silence_chunks``
+        consecutive silent frames following detected speech.
+        """
+        audio_buffer: list[np.ndarray] = []
+        silent_chunks: int = 0
+        speech_started: bool = False
+
+        while not self._stop_capture_event.is_set():
+            try:
+                chunk = chunk_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            if chunk is None:  # stop sentinel
+                break
+
+            prob = self._predict_speech(chunk)
+            is_speech = prob >= self._speech_probability_threshold
+
+            if is_speech:
+                speech_started = True
+                silent_chunks = 0
+                audio_buffer.append(chunk)
+            elif speech_started:
+                # Buffer trailing silence so we don't clip the end of words.
+                audio_buffer.append(chunk)
+                silent_chunks += 1
+                if silent_chunks >= self._silence_chunks:
+                    break
+            # Leading silence (before first speech) is discarded.
+
+        return audio_buffer
