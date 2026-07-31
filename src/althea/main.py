@@ -41,28 +41,53 @@ def run() -> None:
 
     agent = AltheaAgent()
     transcriber = Transcriber()
+    state = "idle"
+    state_lock = threading.Lock()
+
+    def _transition(next_state: str) -> None:
+        nonlocal state
+        with state_lock:
+            logger.info("State transition: %s -> %s", state, next_state)
+            state = next_state
 
     def _on_utterance(audio: np.ndarray) -> None:
         """Called by VoiceActivityDetector with the captured Utterance audio."""
-        text = transcriber.transcribe(audio)
+        _transition("transcribing")
+        try:
+            text = transcriber.transcribe(audio)
+        except Exception:
+            logger.exception("Transcription failed.")
+            _transition("idle")
+            return
         if not text:
             logger.warning("Transcription returned empty text.")
+            _transition("idle")
             return
         logger.info("Command: %s", text)
+        _transition("reasoning")
         try:
             response = asyncio.run(agent.run(text))
         except Exception:
             logger.exception("Agent failed to process command: %s", text)
+            _transition("idle")
             return
+        _transition("responding")
         if response:
             logger.info("Althea: %s", response)
+        _transition("idle")
 
     vad = VoiceActivityDetector(on_utterance=_on_utterance)
 
     def _on_wake_word() -> None:
         """Called by WakeWordDetector when the wake word is detected."""
+        _transition("wake-word-detected")
+        _transition("listening")
         logger.info("Wake word detected — starting VAD capture.")
-        vad.start_capture()
+        try:
+            vad.start_capture()
+        except Exception:
+            logger.exception("Failed to start VAD capture after wake word.")
+            _transition("idle")
 
     detector = WakeWordDetector(on_wake_word=_on_wake_word)
     detector.start()
