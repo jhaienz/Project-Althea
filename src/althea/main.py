@@ -49,7 +49,11 @@ def run() -> None:
             logger.warning("Transcription returned empty text.")
             return
         logger.info("Command: %s", text)
-        response = asyncio.run(agent.run(text))
+        try:
+            response = asyncio.run(agent.run(text))
+        except Exception:
+            logger.exception("Agent failed to process command: %s", text)
+            return
         if response:
             logger.info("Althea: %s", response)
 

@@ -101,7 +101,7 @@ class AltheaAgent:
     def __init__(
         self,
         *,
-        model: str = "gemini-2.0-flash-lite",
+        model: str = "gemini-3.1-flash-lite",
         user_id: str = "local",
         tools: list[Any] | None = None,
     ) -> None:
