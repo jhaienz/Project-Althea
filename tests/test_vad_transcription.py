@@ -281,6 +281,21 @@ class TestVoiceActivityDetectorInit:
         vad = VoiceActivityDetector(on_utterance=MagicMock())
         assert vad._vad_model is None
 
+    def test_capture_is_finished_before_utterance_callback(self, mock_sounddevice):
+        capturing_states = []
+        vad = VoiceActivityDetector(
+            on_utterance=lambda _audio: capturing_states.append(vad.is_capturing)
+        )
+        vad._vad_model = MagicMock()
+        vad._capture_thread = threading.current_thread()
+
+        with patch.object(
+            vad, "_run_vad_loop", return_value=[_make_int16_chunk(1000)]
+        ):
+            vad._capture_utterance()
+
+        assert capturing_states == [False]
+
 
 class TestVoiceActivityDetectorPredictSpeech:
     """Tests for _predict_speech — the Silero VAD wrapper."""

@@ -120,6 +120,10 @@ class AltheaAgent:
     # Public API
     # ------------------------------------------------------------------
 
+    def reset_session(self) -> None:
+        """Start a fresh Agent session on the next Command."""
+        self._session_id = None
+
     async def run(self, command: str) -> str:
         """Send a Command string to the Agent and return its text response.
 

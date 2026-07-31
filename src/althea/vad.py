@@ -230,6 +230,7 @@ class VoiceActivityDetector:
             "Utterance captured: %.2f s",
             len(utterance) / _SAMPLE_RATE,
         )
+        self._capture_thread = None
         self._on_utterance(utterance)
 
     def _run_vad_loop(

@@ -243,6 +243,15 @@ class TestAltheaAgentSession:
         await wired_agent.run("hello")
         assert wired_agent._session_id == "test-session-id"
 
+    @pytest.mark.asyncio
+    async def test_reset_session_starts_a_new_conversation(
+        self, wired_agent: AltheaAgent, mock_runner: MagicMock
+    ) -> None:
+        await wired_agent.run("first conversation")
+        wired_agent.reset_session()
+        await wired_agent.run("new conversation")
+        assert mock_runner.session_service.create_session.call_count == 2
+
 
 # ---------------------------------------------------------------------------
 # run() — response extraction
