@@ -3,6 +3,7 @@
 import logging
 import signal
 import sys
+import threading
 
 from dotenv import load_dotenv
 
@@ -16,11 +17,14 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# Set by the SIGINT handler; the main loop blocks on this event.
+_shutdown_event = threading.Event()
+
 
 def _handle_sigint(sig: int, frame: object) -> None:  # noqa: ARG001
-    """Exit cleanly on Ctrl+C (SIGINT)."""
+    """Signal stop on Ctrl+C (SIGINT) so the main loop can clean up."""
     logger.info("Althea shutting down.")
-    sys.exit(0)
+    _shutdown_event.set()
 
 
 def _on_wake_word() -> None:
@@ -39,15 +43,15 @@ def run() -> None:
     detector = WakeWordDetector(on_wake_word=_on_wake_word)
     detector.start()
 
-    # Block the main thread; the detector runs in a daemon thread.
     try:
-        while True:
-            signal.pause()
+        _shutdown_event.wait()
     finally:
         detector.stop()
+        sys.exit(0)
 
 
 def main() -> None:
     """Console-script entry point (installed via pyproject.toml)."""
     run()
+
 

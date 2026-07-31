@@ -8,10 +8,16 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "google-adk>=0.1.0",
     "sounddevice>=0.5.5",
-    # openwakeword is installed with --no-deps due to tflite-runtime incompatibility
-    # with Python 3.14. Its required runtime deps (numpy, onnxruntime, scikit-learn,
-    # tqdm, scipy) are listed in [dependency-groups].dev below.
+    # openwakeword and its runtime deps are declared here but must be installed
+    # with `uv pip install openwakeword --no-deps` on Python 3.14 because
+    # tflite-runtime (an optional openwakeword dep) has no cp314 wheel.
+    # All other runtime deps below are safe to resolve normally.
     "openwakeword>=0.6.0",
+    "numpy>=1.26.0",
+    "onnxruntime>=1.17.0",
+    "scikit-learn>=1.4.0",
+    "tqdm>=4.66.0",
+    "scipy>=1.12.0",
 ]
 
 [project.scripts]
@@ -36,10 +42,4 @@ pythonpath = ["src"]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
-    # openwakeword runtime deps installed manually (see note above)
-    "numpy>=1.26.0",
-    "onnxruntime>=1.17.0",
-    "scikit-learn>=1.4.0",
-    "tqdm>=4.66.0",
-    "scipy>=1.12.0",
 ]
