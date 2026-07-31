@@ -40,7 +40,7 @@ def test_check_email_lists_and_summarizes_important_messages() -> None:
         metadataHeaders=["Subject", "From"],
     )
     assert result == (
-        "Subject: Build report; From: CI <ci@example.com>; "
+        "Message ID: m1; Subject: Build report; From: CI <ci@example.com>; "
         "Summary: The build passed successfully."
     )
 
@@ -68,6 +68,16 @@ def test_search_email_passes_search_text_to_gmail() -> None:
         userId="me", q="from:ci@example.com", maxResults=3
     )
     assert result == "No matching emails found."
+
+
+def test_recent_email_lists_without_an_important_filter() -> None:
+    service, messages = _service()
+    messages.list.return_value.execute.return_value = {"messages": []}
+
+    result = GmailTool(service=service).recent(limit=3)
+
+    messages.list.assert_called_once_with(userId="me", q="", maxResults=3)
+    assert result == "No recent emails found."
 
 
 def test_send_email_composes_rfc_message() -> None:

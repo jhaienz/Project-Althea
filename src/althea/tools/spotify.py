@@ -15,7 +15,7 @@ _TOKEN_PATH = Path.home() / ".local/share/althea/spotify-token.json"
 
 
 class SpotifyTool:
-    """Persistent Spotipy client used by the Agent's Spotify actions."""
+    """Persistent Spotipy client used by the Agent's Spotify Tool."""
 
     def __init__(self, client: Any | None = None) -> None:
         self._client = client

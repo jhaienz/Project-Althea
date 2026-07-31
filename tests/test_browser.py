@@ -128,6 +128,7 @@ async def test_stop_closes_context_and_playwright(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_native_type_uses_ydotool_as_an_explicit_fallback() -> None:
     with (
+        patch("althea.tools.browser.os.getenv", return_value="wayland"),
         patch("althea.tools.browser.shutil.which", return_value="/usr/bin/ydotool"),
         patch("althea.tools.browser.subprocess.run") as run,
     ):
@@ -137,3 +138,15 @@ async def test_native_type_uses_ydotool_as_an_explicit_fallback() -> None:
         ["/usr/bin/ydotool", "type", "--", "Hello Mom"], check=True
     )
     assert result == "Typed text with ydotool."
+
+
+@pytest.mark.asyncio
+async def test_native_type_is_rejected_outside_wayland() -> None:
+    with (
+        patch("althea.tools.browser.os.getenv", return_value="x11"),
+        patch("althea.tools.browser.subprocess.run") as run,
+    ):
+        result = await BrowserTool().native_type("Hello Mom")
+
+    run.assert_not_called()
+    assert result == "ydotool fallback is only available on Wayland."

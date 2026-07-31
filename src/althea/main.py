@@ -58,6 +58,7 @@ def run() -> None:
         if configured_tts_model
         else VoiceResponder()
     )
+    async_runner = asyncio.Runner()
     state = "idle"
     state_lock = threading.Lock()
     inactivity_timer: threading.Timer | None = None
@@ -97,7 +98,7 @@ def run() -> None:
         logger.info("Command: %s", text)
         _transition("reasoning")
         try:
-            response = asyncio.run(agent.run(text))
+            response = async_runner.run(agent.run(text))
         except Exception:
             logger.exception("Agent failed to process command: %s", text)
             _respond_then_listen(_ERROR_PROMPT)
@@ -155,7 +156,10 @@ def run() -> None:
             inactivity_timer.cancel()
         vad.stop()
         detector.stop()
-        asyncio.run(browser_stop())
+        try:
+            async_runner.run(browser_stop())
+        finally:
+            async_runner.close()
         sys.exit(0)
 
 

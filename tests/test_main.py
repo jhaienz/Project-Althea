@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -56,8 +57,17 @@ def test_voice_response_finishes_before_follow_up_command_capture(caplog) -> Non
     main_mod._shutdown_event.clear()
     fake_audio = np.zeros(16_000, dtype=np.float32)
 
+    loops = []
+
+    async def _run_agent(_command):
+        loops.append(asyncio.get_running_loop())
+        return "done"
+
+    async def _stop_browser():
+        loops.append(asyncio.get_running_loop())
+
     agent = MagicMock()
-    agent.run = AsyncMock(return_value="done")
+    agent.run = AsyncMock(side_effect=_run_agent)
     transcriber = MagicMock()
     transcriber.transcribe.return_value = "open browser"
     voice_responder = MagicMock()
@@ -89,6 +99,7 @@ def test_voice_response_finishes_before_follow_up_command_capture(caplog) -> Non
         patch("althea.tts.VoiceResponder", return_value=voice_responder),
         patch("althea.vad.VoiceActivityDetector", side_effect=_build_vad),
         patch("althea.wake_word.WakeWordDetector", side_effect=_build_detector),
+        patch("althea.tools.browser.browser_stop", side_effect=_stop_browser),
         patch("althea.main.threading.Timer"),
         patch("signal.signal"),
         patch("sys.exit"),
@@ -106,6 +117,7 @@ def test_voice_response_finishes_before_follow_up_command_capture(caplog) -> Non
     vad.stop.assert_called_once()
     detector.start.assert_called_once()
     detector.stop.assert_called_once()
+    assert loops[0] is loops[1]
 
     logs = [r.message for r in caplog.records]
     assert "State transition: idle -> wake-word-detected" in logs

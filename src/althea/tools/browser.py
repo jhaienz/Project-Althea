@@ -1,6 +1,7 @@
 """Persistent Playwright browser automation for web-based tasks."""
 
 import asyncio
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -87,6 +88,8 @@ class BrowserTool:
         return "Message sent."
 
     async def native_type(self, text: str) -> str:
+        if os.getenv("XDG_SESSION_TYPE", "").casefold() != "wayland":
+            return "ydotool fallback is only available on Wayland."
         executable = shutil.which("ydotool")
         if executable is None:
             return "ydotool is not installed."
@@ -138,5 +141,5 @@ async def browser_send_message(selector: str, message: str) -> str:
 
 
 async def native_type(text: str) -> str:
-    """Type text into a native app with ydotool as a Wayland fallback."""
+    """As a last resort, type into a native Wayland app after other Tools fail."""
     return await _browser.native_type(text)

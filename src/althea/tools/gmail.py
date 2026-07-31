@@ -44,7 +44,7 @@ class GnomeKeyringTokenStore:
 
 
 class GmailTool:
-    """Persistent Gmail API client used by the Agent's email actions."""
+    """Persistent Gmail API client used by the Agent's email Tool."""
 
     def __init__(
         self,
@@ -105,6 +105,7 @@ class GmailTool:
             ).execute()
             headers = self._headers(message)
             summaries.append(
+                f"Message ID: {message['id']}; "
                 f"Subject: {headers.get('subject', '(no subject)')}; "
                 f"From: {headers.get('from', '(unknown sender)')}; "
                 f"Summary: {message.get('snippet', '(no preview)')}"
@@ -114,6 +115,10 @@ class GmailTool:
     def check(self, limit: int = 5) -> str:
         summaries = self._summaries("is:important", limit)
         return "; ".join(summaries) if summaries else "No important emails found."
+
+    def recent(self, limit: int = 5) -> str:
+        summaries = self._summaries("", limit)
+        return "; ".join(summaries) if summaries else "No recent emails found."
 
     @classmethod
     def _plain_text(cls, payload: dict[str, Any]) -> str:
@@ -168,6 +173,11 @@ def connect_gmail() -> str:
 def check_email(limit: int = 5) -> str:
     """Summarize recent important emails by subject, sender, and brief content."""
     return _gmail.check(limit)
+
+
+def recent_email(limit: int = 5) -> str:
+    """Summarize recent emails by message ID, subject, sender, and brief content."""
+    return _gmail.recent(limit)
 
 
 def read_email(message_id: str) -> str:
