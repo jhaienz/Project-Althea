@@ -134,7 +134,14 @@ class AltheaAgent:
             Agent produced no text output, e.g. when it only called tools
             without a closing reply).
         """
-        session_id = await self._get_or_create_session()
+        if self._session_id is None:
+            session = await self._runner.session_service.create_session(
+                app_name=_APP_NAME,
+                user_id=self._user_id,
+            )
+            self._session_id = session.id
+            logger.debug("Created ADK session: %s", self._session_id)
+
         message = genai_types.Content(
             role="user",
             parts=[genai_types.Part(text=command)],
@@ -142,7 +149,7 @@ class AltheaAgent:
         response_parts: list[str] = []
         async for event in self._runner.run_async(
             user_id=self._user_id,
-            session_id=session_id,
+            session_id=self._session_id,
             new_message=message,
         ):
             if event.is_final_response() and event.content and event.content.parts:
@@ -153,18 +160,3 @@ class AltheaAgent:
         response = " ".join(response_parts).strip()
         logger.info("Agent response: %s", response)
         return response
-
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-
-    async def _get_or_create_session(self) -> str:
-        """Return the current session ID, creating one if needed."""
-        if self._session_id is None:
-            session = await self._runner.session_service.create_session(
-                app_name=_APP_NAME,
-                user_id=self._user_id,
-            )
-            self._session_id = session.id
-            logger.debug("Created ADK session: %s", self._session_id)
-        return self._session_id

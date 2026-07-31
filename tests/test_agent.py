@@ -75,6 +75,21 @@ def mock_runner(fake_session: MagicMock) -> MagicMock:
     return runner
 
 
+@pytest.fixture()
+def wired_agent(mock_runner: MagicMock) -> AltheaAgent:
+    """Return an AltheaAgent with its runner replaced by mock_runner.
+
+    run_async returns a single 'ok' text event by default; override per-test
+    when a different response sequence is needed.
+    """
+    agent = AltheaAgent(tools=[])
+    agent._runner = mock_runner
+    mock_runner.run_async = MagicMock(
+        return_value=_events_gen(_text_event("ok"))
+    )
+    return agent
+
+
 # ---------------------------------------------------------------------------
 # AltheaAgent initialisation
 # ---------------------------------------------------------------------------
@@ -207,47 +222,26 @@ class TestDiscoverTools:
 class TestAltheaAgentSession:
     @pytest.mark.asyncio
     async def test_session_is_created_on_first_run(
-        self, mock_runner: MagicMock
+        self, wired_agent: AltheaAgent, mock_runner: MagicMock
     ) -> None:
-        agent = AltheaAgent(tools=[])
-        agent._runner = mock_runner
-        mock_runner.run_async = MagicMock(
-            return_value=_events_gen(_text_event("hello"))
-        )
-
-        await agent.run("hello")
-
+        await wired_agent.run("hello")
         mock_runner.session_service.create_session.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_session_is_reused_on_second_run(
-        self, mock_runner: MagicMock
+        self, wired_agent: AltheaAgent, mock_runner: MagicMock
     ) -> None:
-        agent = AltheaAgent(tools=[])
-        agent._runner = mock_runner
-        mock_runner.run_async = MagicMock(
-            return_value=_events_gen(_text_event("hello"))
-        )
-
-        await agent.run("first")
-        await agent.run("second")
-
+        await wired_agent.run("first")
+        await wired_agent.run("second")
         # session created only once
         mock_runner.session_service.create_session.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_session_id_stored_after_first_run(
-        self, mock_runner: MagicMock
+        self, wired_agent: AltheaAgent
     ) -> None:
-        agent = AltheaAgent(tools=[])
-        agent._runner = mock_runner
-        mock_runner.run_async = MagicMock(
-            return_value=_events_gen(_text_event("hello"))
-        )
-
-        await agent.run("hello")
-
-        assert agent._session_id == "test-session-id"
+        await wired_agent.run("hello")
+        assert wired_agent._session_id == "test-session-id"
 
 
 # ---------------------------------------------------------------------------
@@ -258,60 +252,40 @@ class TestAltheaAgentSession:
 class TestAltheaAgentRun:
     @pytest.mark.asyncio
     async def test_run_returns_final_response_text(
-        self, mock_runner: MagicMock
+        self, wired_agent: AltheaAgent, mock_runner: MagicMock
     ) -> None:
-        agent = AltheaAgent(tools=[])
-        agent._runner = mock_runner
         mock_runner.run_async = MagicMock(
             return_value=_events_gen(_text_event("I heard you!"))
         )
-
-        result = await agent.run("test command")
-
+        result = await wired_agent.run("test command")
         assert result == "I heard you!"
 
     @pytest.mark.asyncio
     async def test_run_ignores_non_final_events(
-        self, mock_runner: MagicMock
+        self, wired_agent: AltheaAgent, mock_runner: MagicMock
     ) -> None:
-        agent = AltheaAgent(tools=[])
-        agent._runner = mock_runner
         fc_event = _function_call_event("echo", {"text": "hello"})
         final_event = _text_event("Done!")
         mock_runner.run_async = MagicMock(
             return_value=_events_gen(fc_event, final_event)
         )
-
-        result = await agent.run("echo hello")
-
+        result = await wired_agent.run("echo hello")
         assert result == "Done!"
 
     @pytest.mark.asyncio
     async def test_run_returns_empty_string_when_no_text_parts(
-        self, mock_runner: MagicMock
+        self, wired_agent: AltheaAgent, mock_runner: MagicMock
     ) -> None:
-        agent = AltheaAgent(tools=[])
-        agent._runner = mock_runner
-        # A final event with no text content
         empty_event = Event(author="althea")
         mock_runner.run_async = MagicMock(return_value=_events_gen(empty_event))
-
-        result = await agent.run("silent command")
-
+        result = await wired_agent.run("silent command")
         assert result == ""
 
     @pytest.mark.asyncio
     async def test_run_sends_command_as_user_content(
-        self, mock_runner: MagicMock
+        self, wired_agent: AltheaAgent, mock_runner: MagicMock
     ) -> None:
-        agent = AltheaAgent(tools=[])
-        agent._runner = mock_runner
-        mock_runner.run_async = MagicMock(
-            return_value=_events_gen(_text_event("ok"))
-        )
-
-        await agent.run("open Firefox")
-
+        await wired_agent.run("open Firefox")
         call_kwargs = mock_runner.run_async.call_args.kwargs
         message: genai_types.Content = call_kwargs["new_message"]
         assert message.role == "user"
@@ -326,33 +300,22 @@ class TestAltheaAgentRun:
         mock_runner.run_async = MagicMock(
             return_value=_events_gen(_text_event("ok"))
         )
-
         await agent.run("test")
-
         call_kwargs = mock_runner.run_async.call_args.kwargs
         assert call_kwargs["user_id"] == "bob"
 
     @pytest.mark.asyncio
     async def test_run_passes_session_id_to_runner(
-        self, mock_runner: MagicMock, fake_session: MagicMock
+        self, wired_agent: AltheaAgent, mock_runner: MagicMock, fake_session: MagicMock
     ) -> None:
-        agent = AltheaAgent(tools=[])
-        agent._runner = mock_runner
-        mock_runner.run_async = MagicMock(
-            return_value=_events_gen(_text_event("ok"))
-        )
-
-        await agent.run("test")
-
+        await wired_agent.run("test")
         call_kwargs = mock_runner.run_async.call_args.kwargs
         assert call_kwargs["session_id"] == fake_session.id
 
     @pytest.mark.asyncio
     async def test_run_joins_multiple_text_parts(
-        self, mock_runner: MagicMock
+        self, wired_agent: AltheaAgent, mock_runner: MagicMock
     ) -> None:
-        agent = AltheaAgent(tools=[])
-        agent._runner = mock_runner
         multi_part_event = Event(
             author="althea",
             content=genai_types.Content(
@@ -366,9 +329,7 @@ class TestAltheaAgentRun:
         mock_runner.run_async = MagicMock(
             return_value=_events_gen(multi_part_event)
         )
-
-        result = await agent.run("test")
-
+        result = await wired_agent.run("test")
         assert result == "Hello world"
 
 
