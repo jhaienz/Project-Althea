@@ -1,5 +1,6 @@
 """Althea main loop — starts the assistant and listens for the wake word."""
 
+import asyncio
 import logging
 import signal
 import sys
@@ -30,6 +31,7 @@ def _handle_sigint(sig: int, frame: object) -> None:  # noqa: ARG001
 
 def run() -> None:
     """Start the Althea main loop."""
+    from althea.agent import AltheaAgent
     from althea.transcription import Transcriber
     from althea.vad import VoiceActivityDetector
     from althea.wake_word import WakeWordDetector
@@ -37,15 +39,19 @@ def run() -> None:
     signal.signal(signal.SIGINT, _handle_sigint)
     logger.info("Althea is running")
 
+    agent = AltheaAgent()
     transcriber = Transcriber()
 
     def _on_utterance(audio: np.ndarray) -> None:
         """Called by VoiceActivityDetector with the captured Utterance audio."""
         text = transcriber.transcribe(audio)
-        if text:
-            logger.info("Command: %s", text)
-        else:
+        if not text:
             logger.warning("Transcription returned empty text.")
+            return
+        logger.info("Command: %s", text)
+        response = asyncio.run(agent.run(text))
+        if response:
+            logger.info("Althea: %s", response)
 
     vad = VoiceActivityDetector(on_utterance=_on_utterance)
 
