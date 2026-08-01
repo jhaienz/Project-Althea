@@ -98,7 +98,16 @@ def run() -> None:
         logger.info("Command: %s", text)
         _transition("reasoning")
         try:
-            response = async_runner.run(agent.run(text))
+            def _speak_progress(step_text: str) -> None:
+                """Speak a Compound Command step narration synchronously."""
+                logger.info("Compound step: %s", step_text)
+                _transition("responding")
+                done = threading.Event()
+                voice_responder.speak(step_text, on_complete=done.set)
+                done.wait()
+                _transition("reasoning")
+
+            response = async_runner.run(agent.run(text, on_progress=_speak_progress))
         except Exception:
             logger.exception("Agent failed to process command: %s", text)
             _respond_then_listen(_ERROR_PROMPT)

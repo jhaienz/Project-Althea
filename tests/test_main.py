@@ -59,7 +59,7 @@ def test_voice_response_finishes_before_follow_up_command_capture(caplog) -> Non
 
     loops = []
 
-    async def _run_agent(_command):
+    async def _run_agent(_command, *, on_progress=None):
         loops.append(asyncio.get_running_loop())
         return "done"
 
@@ -108,7 +108,8 @@ def test_voice_response_finishes_before_follow_up_command_capture(caplog) -> Non
         main_mod.run()
 
     transcriber.transcribe.assert_called_once()
-    agent.run.assert_awaited_once_with("open browser")
+    agent.run.assert_awaited_once()
+    assert agent.run.call_args.args == ("open browser",)
     assert [call.args[0] for call in voice_responder.speak.call_args_list] == [
         "Hi Master Jai, what can I do for you today?",
         "done",

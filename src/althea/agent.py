@@ -18,6 +18,7 @@ import importlib
 import inspect
 import logging
 import pkgutil
+from collections.abc import Callable
 from typing import Any
 
 import google.genai.types as genai_types
@@ -42,6 +43,13 @@ avoid unnecessary filler.
 When the user gives you a command, identify the most appropriate Tool and
 call it.  If no Tool fits, reply conversationally and let the user know
 you are not yet able to help with that request.
+
+Compound Commands: when the user gives you a command with multiple intents
+(e.g. "Open Discord, play some music, and check my email"), execute each
+step sequentially in order.  Before each Tool call, narrate the step you
+are about to perform (e.g. "Opening Discord...") so the user hears progress
+updates between steps.  If a step fails, report the error briefly and then
+continue with the remaining steps rather than stopping entirely.
 """
 
 # ---------------------------------------------------------------------------
@@ -124,14 +132,27 @@ class AltheaAgent:
         """Start a fresh Agent session on the next Command."""
         self._session_id = None
 
-    async def run(self, command: str) -> str:
+    async def run(
+        self,
+        command: str,
+        *,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> str:
         """Send a Command string to the Agent and return its text response.
 
         Creates a session on first call and reuses it for subsequent calls so
         the Agent retains conversational context within one Althea session.
 
+        For Compound Commands the Agent emits partial (intermediate) text
+        events between Tool calls to narrate progress.  When ``on_progress``
+        is provided those narrations are forwarded to it so callers can speak
+        them to the user in real time.
+
         Args:
             command: Transcribed speech from the user.
+            on_progress: Optional callback invoked with intermediate narration
+                text between steps of a Compound Command.  Only partial
+                (streaming) events are forwarded; the final response is not.
 
         Returns:
             The Agent's final text response (possibly empty string if the
@@ -156,6 +177,15 @@ class AltheaAgent:
             session_id=self._session_id,
             new_message=message,
         ):
+            if event.partial and event.content and event.content.parts:
+                # Intermediate narration for a Compound Command step.
+                if on_progress is not None:
+                    for part in event.content.parts:
+                        if part.text:
+                            on_progress(part.text)
+                            logger.debug("Compound step progress: %s", part.text)
+                continue
+
             if event.is_final_response() and event.content and event.content.parts:
                 for part in event.content.parts:
                     if part.text:
