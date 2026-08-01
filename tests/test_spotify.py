@@ -1,10 +1,10 @@
 """Tests for the Spotify Tool (issue #9)."""
 
 from pathlib import Path
-from unittest.mock import MagicMock
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
+from spotipy.exceptions import SpotifyException
 
 from althea.tools.spotify import SpotifyTool
 
@@ -32,6 +32,50 @@ def test_play_searches_and_starts_the_first_match(client: MagicMock) -> None:
     client.search.assert_called_once_with(q="lo-fi", type="track", limit=1)
     client.start_playback.assert_called_once_with(uris=["spotify:track:1"])
     assert result == "Playing Lofi Study by Chill Artist."
+
+
+def test_play_retries_no_active_device_on_an_available_device(
+    client: MagicMock,
+) -> None:
+    client.start_playback.side_effect = [
+        SpotifyException(
+            404,
+            -1,
+            "Player command failed: No active device found",
+            reason="NO_ACTIVE_DEVICE",
+        ),
+        None,
+    ]
+    client.devices.return_value = {
+        "devices": [
+            {"id": "restricted", "is_restricted": True},
+            {"id": "computer-1", "is_restricted": False},
+        ]
+    }
+
+    result = SpotifyTool(client).play("Bulong by December Avenue")
+
+    assert client.start_playback.call_args_list == [
+        call(uris=["spotify:track:1"]),
+        call(device_id="computer-1", uris=["spotify:track:1"]),
+    ]
+    assert result == "Playing Lofi Study by Chill Artist."
+
+
+def test_play_explains_when_no_spotify_device_is_available(
+    client: MagicMock,
+) -> None:
+    client.start_playback.side_effect = SpotifyException(
+        404,
+        -1,
+        "Player command failed: No active device found",
+        reason="NO_ACTIVE_DEVICE",
+    )
+    client.devices.return_value = {"devices": []}
+
+    result = SpotifyTool(client).play("Bulong by December Avenue")
+
+    assert result == "Open Spotify on a device, then try again."
 
 
 @pytest.mark.parametrize(

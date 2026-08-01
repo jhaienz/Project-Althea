@@ -8,6 +8,8 @@ import subprocess
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 _PROFILE_DIR = Path.home() / ".local/share/althea/browser-profile"
@@ -47,10 +49,16 @@ class BrowserTool:
         return "Browser ready."
 
     async def stop(self) -> str:
-        if self._context is not None:
-            await self._context.close()
-        if self._playwright is not None:
-            await self._playwright.stop()
+        try:
+            if self._context is not None and not self._context.is_closed():
+                await self._context.close()
+        except PlaywrightError:
+            pass
+        try:
+            if self._playwright is not None:
+                await self._playwright.stop()
+        except PlaywrightError:
+            pass
         self._page = self._context = self._playwright = None
         return "Browser closed."
 
@@ -73,7 +81,10 @@ class BrowserTool:
 
     async def fill(self, selector: str, text: str) -> str:
         await self.start()
-        await self.page.locator(selector).fill(text)
+        try:
+            await self.page.locator(selector).fill(text)
+        except PlaywrightTimeoutError:
+            return f"Could not find {selector} on the current page."
         return f"Filled {selector}."
 
     async def read(self, selector: str = "body") -> str:

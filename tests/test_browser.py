@@ -4,6 +4,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from althea.tools.browser import BrowserTool
 
@@ -63,6 +65,18 @@ async def test_fill_types_into_a_page_element() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fill_timeout_returns_a_recoverable_tool_response() -> None:
+    page, locator = _page()
+    locator.fill.side_effect = PlaywrightTimeoutError(
+        'waiting for locator("input[name=q]")'
+    )
+
+    result = await BrowserTool(page=page).fill("input[name=q]", "JHAITNZ")
+
+    assert result == "Could not find input[name=q] on the current page."
+
+
+@pytest.mark.asyncio
 async def test_read_returns_page_text() -> None:
     page, locator = _page()
     locator.inner_text.return_value = "  Page content  "
@@ -111,6 +125,7 @@ async def test_start_reuses_one_persistent_context(tmp_path: Path) -> None:
 async def test_stop_closes_context_and_playwright(tmp_path: Path) -> None:
     playwright = MagicMock()
     context = MagicMock(pages=[MagicMock()])
+    context.is_closed.return_value = False
     context.close = AsyncMock()
     playwright.chromium.launch_persistent_context = AsyncMock(return_value=context)
     playwright.stop = AsyncMock()
@@ -123,6 +138,24 @@ async def test_stop_closes_context_and_playwright(tmp_path: Path) -> None:
 
     context.close.assert_awaited_once_with()
     playwright.stop.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_stop_tolerates_an_already_closed_driver(tmp_path: Path) -> None:
+    playwright = MagicMock()
+    context = MagicMock(pages=[MagicMock()])
+    context.is_closed.return_value = False
+    context.close = AsyncMock(side_effect=PlaywrightError("Connection closed"))
+    playwright.chromium.launch_persistent_context = AsyncMock(return_value=context)
+    playwright.stop = AsyncMock(side_effect=PlaywrightError("Connection closed"))
+    manager = MagicMock()
+    manager.start = AsyncMock(return_value=playwright)
+    tool = BrowserTool(playwright_factory=lambda: manager, profile_dir=tmp_path)
+    await tool.start()
+
+    result = await tool.stop()
+
+    assert result == "Browser closed."
 
 
 @pytest.mark.asyncio

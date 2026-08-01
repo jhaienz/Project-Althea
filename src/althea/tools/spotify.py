@@ -5,6 +5,7 @@ from typing import Any
 
 import spotipy
 from spotipy.cache_handler import CacheFileHandler
+from spotipy.exceptions import SpotifyException
 from spotipy.oauth2 import SpotifyOAuth
 
 _SCOPES = (
@@ -45,7 +46,25 @@ class SpotifyTool:
         if not tracks:
             return f"I couldn't find {search_text} on Spotify."
         track = tracks[0]
-        self.client.start_playback(uris=[track["uri"]])
+        try:
+            self.client.start_playback(uris=[track["uri"]])
+        except SpotifyException as error:
+            if error.reason != "NO_ACTIVE_DEVICE":
+                raise
+            # ponytail: first usable device; add device preferences when needed.
+            device = next(
+                (
+                    device
+                    for device in self.client.devices().get("devices", [])
+                    if device.get("id") and not device.get("is_restricted")
+                ),
+                None,
+            )
+            if device is None:
+                return "Open Spotify on a device, then try again."
+            self.client.start_playback(
+                device_id=device["id"], uris=[track["uri"]]
+            )
         return f"Playing {self._describe(track)}."
 
     def pause(self) -> str:
