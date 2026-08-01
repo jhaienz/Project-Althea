@@ -204,28 +204,51 @@ class TestCompoundCommandProgress:
             return_value=_events_gen(intermediate, final)
         )
 
+        # Partial tokens with no following function call are treated as
+        # streamed final-response content and included in the result.
         result = await wired_agent.run("do something")
-        assert result == "Done."
+        assert "Done." in result
 
     @pytest.mark.asyncio
     async def test_non_partial_text_event_not_forwarded_to_progress(
         self, wired_agent: AltheaAgent, mock_runner: MagicMock
     ) -> None:
-        """Only partial (intermediate) text events are forwarded; final text is not."""
+        """Only partial (intermediate) text events seed narration; non-partial are not forwarded."""
         non_partial_before_final = _text_event("I'll do that.", partial=False)
         final = _text_event("All done.")
 
-        # Two non-partial events — only the last should be the "final response".
-        # The first non-partial event before the actual final one should NOT
-        # be treated as progress either, so on_progress is never called.
         mock_runner.run_async = MagicMock(
             return_value=_events_gen(non_partial_before_final, final)
         )
 
         progress_cb = MagicMock()
-        result = await wired_agent.run("test", on_progress=progress_cb)
+        await wired_agent.run("test", on_progress=progress_cb)
 
         progress_cb.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_multiple_partial_chunks_buffered_into_single_progress_call(
+        self, wired_agent: AltheaAgent, mock_runner: MagicMock
+    ) -> None:
+        """Multiple partial tokens for one step are joined before on_progress fires.
+
+        on_progress must be called exactly once per step (per function call),
+        not once per streaming token.
+        """
+        chunk1 = _text_event("Opening ", partial=True)
+        chunk2 = _text_event("Discord...", partial=True)
+        tool = _function_call_event("launch_app", {"app_name": "discord"})
+        final = _text_event("Done.")
+
+        mock_runner.run_async = MagicMock(
+            return_value=_events_gen(chunk1, chunk2, tool, final)
+        )
+
+        progress_cb = MagicMock()
+        await wired_agent.run("Open Discord", on_progress=progress_cb)
+
+        # The two chunks are joined into one call — not two separate calls.
+        progress_cb.assert_called_once_with("Opening Discord...")
 
     @pytest.mark.asyncio
     async def test_final_response_not_forwarded_to_progress(
@@ -344,3 +367,88 @@ class TestCompoundCommandErrorHandling:
         )
 
         assert progress_cb.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Error policy: configurable stop-vs-continue
+# ---------------------------------------------------------------------------
+
+
+class TestErrorPolicy:
+    @pytest.mark.asyncio
+    async def test_error_policy_defaults_to_continue(
+        self, wired_agent: AltheaAgent, mock_runner: MagicMock
+    ) -> None:
+        """Default error_policy='continue' sends the command verbatim."""
+        final = _text_event("Done.")
+        mock_runner.run_async = MagicMock(return_value=_events_gen(final))
+
+        await wired_agent.run("Open Discord and play music")
+
+        call_kwargs = mock_runner.run_async.call_args.kwargs
+        message: genai_types.Content = call_kwargs["new_message"]
+        # No extra instruction appended.
+        assert message.parts[0].text == "Open Discord and play music"
+
+    @pytest.mark.asyncio
+    async def test_error_policy_stop_appends_halt_instruction(
+        self, wired_agent: AltheaAgent, mock_runner: MagicMock
+    ) -> None:
+        """error_policy='stop' appends a halt-on-failure instruction to the command."""
+        final = _text_event("Done.")
+        mock_runner.run_async = MagicMock(return_value=_events_gen(final))
+
+        await wired_agent.run("Open Discord and play music", error_policy="stop")
+
+        call_kwargs = mock_runner.run_async.call_args.kwargs
+        message: genai_types.Content = call_kwargs["new_message"]
+        text = message.parts[0].text
+        # Original command is preserved at the start.
+        assert text.startswith("Open Discord and play music")
+        # A halt instruction is appended.
+        assert "stop" in text.lower() or "halt" in text.lower()
+
+    @pytest.mark.asyncio
+    async def test_error_policy_continue_explicit_same_as_default(
+        self, wired_agent: AltheaAgent, mock_runner: MagicMock
+    ) -> None:
+        """Explicit error_policy='continue' behaves identically to the default."""
+        final = _text_event("Done.")
+        mock_runner.run_async = MagicMock(return_value=_events_gen(final))
+
+        await wired_agent.run("Open Discord", error_policy="continue")
+
+        call_kwargs = mock_runner.run_async.call_args.kwargs
+        message: genai_types.Content = call_kwargs["new_message"]
+        assert message.parts[0].text == "Open Discord"
+
+    @pytest.mark.asyncio
+    async def test_error_policy_stop_still_returns_final_response(
+        self, wired_agent: AltheaAgent, mock_runner: MagicMock
+    ) -> None:
+        """error_policy='stop' does not affect final response collection."""
+        final = _text_event("Stopped after error.")
+        mock_runner.run_async = MagicMock(return_value=_events_gen(final))
+
+        result = await wired_agent.run("Open Discord and play music", error_policy="stop")
+        assert result == "Stopped after error."
+
+    @pytest.mark.asyncio
+    async def test_error_policy_stop_still_fires_progress_callbacks(
+        self, wired_agent: AltheaAgent, mock_runner: MagicMock
+    ) -> None:
+        """error_policy='stop' does not suppress on_progress callbacks."""
+        narration = _text_event("Opening Discord...", partial=True)
+        tool = _function_call_event("launch_app", {"app_name": "discord"})
+        final = _text_event("Done.")
+
+        mock_runner.run_async = MagicMock(
+            return_value=_events_gen(narration, tool, final)
+        )
+
+        progress_cb = MagicMock()
+        await wired_agent.run(
+            "Open Discord", on_progress=progress_cb, error_policy="stop"
+        )
+        progress_cb.assert_called_once_with("Opening Discord...")
+

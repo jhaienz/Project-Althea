@@ -19,7 +19,7 @@ import inspect
 import logging
 import pkgutil
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 import google.genai.types as genai_types
 from google.adk.agents import Agent
@@ -137,22 +137,28 @@ class AltheaAgent:
         command: str,
         *,
         on_progress: Callable[[str], None] | None = None,
+        error_policy: Literal["continue", "stop"] = "continue",
     ) -> str:
         """Send a Command string to the Agent and return its text response.
 
         Creates a session on first call and reuses it for subsequent calls so
         the Agent retains conversational context within one Althea session.
 
-        For Compound Commands the Agent emits partial (intermediate) text
-        events between Tool calls to narrate progress.  When ``on_progress``
-        is provided those narrations are forwarded to it so callers can speak
-        them to the user in real time.
+        For Compound Commands the Agent emits streaming (partial) text events
+        to narrate each step before calling the corresponding Tool.  When
+        ``on_progress`` is provided, the accumulated narration for each step is
+        forwarded once the function-call boundary is reached — not once per
+        streaming token — so callers receive complete sentences to speak aloud.
 
         Args:
             command: Transcribed speech from the user.
-            on_progress: Optional callback invoked with intermediate narration
-                text between steps of a Compound Command.  Only partial
-                (streaming) events are forwarded; the final response is not.
+            on_progress: Optional callback invoked with the completed narration
+                for each Compound Command step just before its Tool fires.
+                Fires once per step (per Tool call), not once per token.
+            error_policy: How to handle a failed step in a Compound Command.
+                ``"continue"`` (default) — report the failure and proceed with
+                remaining steps.  ``"stop"`` — halt immediately after the first
+                failure without executing remaining steps.
 
         Returns:
             The Agent's final text response (possibly empty string if the
@@ -167,26 +173,51 @@ class AltheaAgent:
             self._session_id = session.id
             logger.debug("Created ADK session: %s", self._session_id)
 
+        effective_command = command
+        if error_policy == "stop":
+            effective_command = (
+                command
+                + "\n\n[Error policy: stop on first failure — if any step of "
+                "this compound command fails, report the error and halt "
+                "immediately without proceeding to remaining steps.]"
+            )
+
         message = genai_types.Content(
             role="user",
-            parts=[genai_types.Part(text=command)],
+            parts=[genai_types.Part(text=effective_command)],
         )
         response_parts: list[str] = []
+        # Narration buffer: accumulates partial tokens for the current step.
+        # Flushed to on_progress at each function-call boundary (once per step,
+        # not once per token) so callers always receive complete sentences.
+        narration_buffer: list[str] = []
+
         async for event in self._runner.run_async(
             user_id=self._user_id,
             session_id=self._session_id,
             new_message=message,
         ):
             if event.partial and event.content and event.content.parts:
-                # Intermediate narration for a Compound Command step.
-                if on_progress is not None:
-                    for part in event.content.parts:
-                        if part.text:
-                            on_progress(part.text)
-                            logger.debug("Compound step progress: %s", part.text)
+                # Accumulate streaming narration tokens for the current step.
+                for part in event.content.parts:
+                    if part.text:
+                        narration_buffer.append(part.text)
+                continue
+
+            # Function call = step boundary: flush the completed narration.
+            if event.get_function_calls():
+                if narration_buffer and on_progress is not None:
+                    narration = "".join(narration_buffer)
+                    on_progress(narration)
+                    logger.debug("Compound step narration: %s", narration)
+                narration_buffer.clear()
                 continue
 
             if event.is_final_response() and event.content and event.content.parts:
+                # Any remaining buffer is a streamed final response, not narration.
+                if narration_buffer:
+                    response_parts.append("".join(narration_buffer))
+                    narration_buffer.clear()
                 for part in event.content.parts:
                     if part.text:
                         response_parts.append(part.text)
